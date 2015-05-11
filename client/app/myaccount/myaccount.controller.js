@@ -1,32 +1,84 @@
 'use strict';
 
 angular.module('riwebApp')
-    .controller('MyaccountCtrl', function ($scope, Auth, User, Wallet) {
-        var Remote = ripple.Remote;
-        var remote = new Remote({
+    .factory('Remote', [function ($scope, Auth) {
+        var Remote = new ripple.Remote({
             // see the API Reference for available options
             servers: [ 'ws://localhost:6006' ]
         });
 
-        $scope.getMyAccountUser = Auth.getCurrentUser;
-
-        var loadBalance = function(remote, walletPublicKey){
-            remote.requestAccountInfo({account: walletPublicKey}, function (err, info) {
-                /*jshint camelcase: false */
-                $scope.xrpBallance = info.account_data.Balance;
-                $scope.$apply();
-            });
-        };
-
-        var loadCurrentUserBalance = function(){
-            Wallet.getByOwnerEmail({ownerEmail: $scope.getMyAccountUser().email}).$promise.then(function (data) {
+        Remote.loadCurrentUserBalance = function(){
+            Wallet.getByOwnerEmail({ownerEmail: Auth.getCurrentUser().email}).$promise.then(function (data) {
                 if (data.length === 1) {
                     $scope.wallet = data[0];
-                    loadBalance(remote, $scope.wallet.publicKey);
+                    Remote.requestAccountInfo({account: $scope.wallet.publicKey}, function (err, info) {
+                        /*jshint camelcase: false */
+                        $scope.xrpBallance = info.account_data.Balance;
+                        $scope.$apply();
+                    });
                 }
             });
         };
 
+        Remote.init = function(){
+            Remote.connect(function () {
+                console.log('Remote connected');
+
+                var streams = [
+                    'ledger',
+                    'transactions'
+                ];
+
+                var request = Remote.requestSubscribe(streams);
+
+                request.on('error', function (error) {
+                    console.log('request error: ', error);
+                });
+
+
+                // the `ledger_closed` and `transaction` will come in on the remote
+                // since the request for subscribe is finalized after the success return
+                // the streaming events will still come in, but not on the initial request
+                Remote.on('ledger_closed', function (ledger) {
+                    /*jshint camelcase: false */
+                    $scope.ledgerClosed = ledger.ledger_hash;
+                    $scope.$apply();
+                });
+
+                Remote.on('error', function (error) {
+                    $scope.error = error;
+                    $scope.$apply();
+                });
+
+                // fire the request
+                request.request();
+
+                /* Remote connected */
+                Remote.requestServerInfo(function (err, info) {
+                    /*jshint camelcase: false */
+                    var pubkeyNode = info.info.pubkey_node;
+                    if (pubkeyNode) {
+                        $scope.message = 'Connected to server ' + pubkeyNode;
+                        $scope.server_name = pubkeyNode;
+                        $scope.server_error = '';
+                    } else {
+                        $scope.server_name = '';
+                        $scope.server_error = 'Error ' + err;
+                    }
+                    $scope.$apply();
+
+                });
+
+                Remote.loadCurrentUserBalance();
+
+            });
+        }
+
+        return Remote;
+    }])
+    .controller('MyaccountCtrl', function ($scope, Auth, User, Wallet, Remote) {
+
+        $scope.getMyAccountUser = Auth.getCurrentUser;
 
         $scope.createWallet = function () {
             var currentUser = $scope.getMyAccountUser();
@@ -46,7 +98,7 @@ angular.module('riwebApp')
 
                         return Wallet.save(newWallet,
                             function (data) {
-                                loadCurrentUserBalance();
+                                Remote.loadCurrentUserBalance();
                                 swal('Good job!', 'Congratulations ' + currentUser.name + '! You created an new wallet! ' + data.publicKey, 'success');
                             },
                             function () {
@@ -60,57 +112,5 @@ angular.module('riwebApp')
         $scope.ballance = '0 XRPs :(';
         $scope.ledgerClosed = '';
         $scope.error = '';
-
-
-        remote.connect(function () {
-            console.log('Remote connected');
-
-            var streams = [
-                'ledger',
-                'transactions'
-            ];
-
-            var request = remote.requestSubscribe(streams);
-
-            request.on('error', function (error) {
-                console.log('request error: ', error);
-            });
-
-
-            // the `ledger_closed` and `transaction` will come in on the remote
-            // since the request for subscribe is finalized after the success return
-            // the streaming events will still come in, but not on the initial request
-            remote.on('ledger_closed', function (ledger) {
-                /*jshint camelcase: false */
-                $scope.ledgerClosed = ledger.ledger_hash;
-                $scope.$apply();
-            });
-
-            remote.on('error', function (error) {
-                $scope.error = error;
-                $scope.$apply();
-            });
-
-            // fire the request
-            request.request();
-
-            /* remote connected */
-            remote.requestServerInfo(function (err, info) {
-                /*jshint camelcase: false */
-                var pubkeyNode = info.info.pubkey_node;
-                if (pubkeyNode) {
-                    $scope.message = 'Connected to server ' + pubkeyNode;
-                    $scope.server_name = pubkeyNode;
-                    $scope.server_error = '';
-                } else {
-                    $scope.server_name = '';
-                    $scope.server_error = 'Error ' + err;
-                }
-                $scope.$apply();
-
-            });
-
-            loadCurrentUserBalance();
-
-        });
+        Remote.init();
     });
